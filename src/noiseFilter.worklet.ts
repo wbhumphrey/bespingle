@@ -1,7 +1,8 @@
 // Runs RNNoise on the audio rendering thread. The page fetches the WebAssembly
 // binary and passes its bytes in, because worklet scopes may lack fetch.
 declare const sampleRate: number;
-declare function registerProcessor(name: string, processor: new (options: { processorOptions: { wasm: ArrayBuffer } }) => AudioWorkletProcessor): void;
+type Options = { processorOptions: { wasm: ArrayBuffer; bypassed?: boolean } };
+declare function registerProcessor(name: string, processor: new (options: Options) => AudioWorkletProcessor): void;
 declare class AudioWorkletProcessor {
   readonly port: MessagePort;
   process(inputs: Float32Array[][], outputs: Float32Array[][]): boolean;
@@ -22,6 +23,8 @@ type Rnnoise = {
 const FRAME = 480; // 10 ms at 48 kHz
 const QUANTUM = 128;
 const SCALE = 32768; // RNNoise expects 16-bit sample values, not ±1 floats.
+// After a bypass, a fresh RNNoise state hears this many frames before its output is used.
+const WARMUP = 10;
 
 // The Emscripten build needs only these three imports; its own JS glue is not used.
 async function load(bytes: ArrayBuffer): Promise<Rnnoise> {
@@ -53,10 +56,25 @@ class NoiseFilterProcessor extends AudioWorkletProcessor {
   private queueLength = FRAME;
   private flowing = false;
   private stopped = false;
+  // Bypassed audio is delayed by the frame RNNoise itself holds back, so both paths line up.
+  private previous = new Float32Array(FRAME);
+  private bypassed: boolean;
+  // Share of the output taken from RNNoise; it ramps over one frame whenever the path changes.
+  private mix: number;
+  private stale: boolean; // RNNoise missed audio while bypassed and must start afresh.
+  private warmup = 0;
+  private denoised = 0;
 
-  constructor({ processorOptions }: { processorOptions: { wasm: ArrayBuffer } }) {
+  constructor({ processorOptions }: Options) {
     super();
-    this.port.onmessage = ({ data }) => { if (data === 'stop') this.release(); };
+    this.bypassed = processorOptions.bypassed === true;
+    this.mix = this.bypassed ? 0 : 1;
+    this.stale = this.bypassed;
+    this.port.onmessage = ({ data }) => {
+      if (data === 'stop') this.release();
+      else if (data?.type === 'bypass') this.bypassed = data.bypassed === true;
+      else if (data?.type === 'stats') this.port.postMessage({ type: 'stats', bypassed: this.bypassed, denoised: this.denoised });
+    };
     if (sampleRate !== 48000) { this.fail(`RNNoise needs 48 kHz audio, not ${sampleRate} Hz.`); return; }
     load(processorOptions.wasm).then((rnnoise) => {
       if (this.stopped) return;
@@ -76,7 +94,7 @@ class NoiseFilterProcessor extends AudioWorkletProcessor {
       const out = outputs[0][0];
       for (let i = 0; i < QUANTUM; i++) {
         this.pending[this.pendingLength++] = samples ? samples[i] * SCALE : 0;
-        if (this.pendingLength === FRAME) this.denoise();
+        if (this.pendingLength === FRAME) this.frame();
       }
       out.set(this.queue.subarray(0, QUANTUM));
       this.queue.copyWithin(0, QUANTUM, this.queueLength);
@@ -89,15 +107,54 @@ class NoiseFilterProcessor extends AudioWorkletProcessor {
     }
   }
 
+  private frame() {
+    const raw = this.previous;
+    const at = this.queueLength;
+    if (!this.bypassed && this.stale) {
+      this.reset();
+      this.stale = false; this.warmup = WARMUP;
+    }
+    if (this.bypassed && this.mix === 0) {
+      this.stale = true;
+      for (let i = 0; i < FRAME; i++) this.queue[at + i] = raw[i] / SCALE;
+    } else {
+      const denoised = this.denoise();
+      if (this.warmup > 0) {
+        this.warmup--;
+        for (let i = 0; i < FRAME; i++) this.queue[at + i] = raw[i] / SCALE;
+      } else if (!this.bypassed && this.mix === 1) {
+        for (let i = 0; i < FRAME; i++) this.queue[at + i] = denoised[i] / SCALE;
+      } else {
+        // A one-frame crossfade, so changing path never steps the waveform.
+        const from = this.mix; const to = this.bypassed ? 0 : 1;
+        for (let i = 0; i < FRAME; i++) {
+          const mix = from + (to - from) * (i + 1) / FRAME;
+          this.queue[at + i] = (raw[i] * (1 - mix) + denoised[i] * mix) / SCALE;
+        }
+        this.mix = to;
+      }
+    }
+    this.queueLength += FRAME;
+    this.previous = this.pending; this.pending = raw;
+    this.pendingLength = 0;
+  }
+
   private denoise() {
     const rnnoise = this.rnnoise;
     if (!rnnoise) throw new Error('RNNoise stopped unexpectedly.');
     new Float32Array(rnnoise.memory.buffer, this.input, FRAME).set(this.pending);
     rnnoise.rnnoise_process_frame(this.state, this.output, this.input);
-    const denoised = new Float32Array(rnnoise.memory.buffer, this.output, FRAME);
-    for (let i = 0; i < FRAME; i++) this.queue[this.queueLength + i] = denoised[i] / SCALE;
-    this.queueLength += FRAME;
-    this.pendingLength = 0;
+    this.denoised++;
+    return new Float32Array(rnnoise.memory.buffer, this.output, FRAME);
+  }
+
+  // A state that missed audio would replay its old overlap and gains into the new audio.
+  private reset() {
+    const rnnoise = this.rnnoise;
+    if (!rnnoise) throw new Error('RNNoise stopped unexpectedly.');
+    rnnoise.rnnoise_destroy(this.state);
+    this.state = rnnoise.rnnoise_create(0);
+    if (!this.state) throw new Error('Could not allocate RNNoise state.');
   }
 
   private fail(message: string) {

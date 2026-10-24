@@ -188,3 +188,4 @@ try {
   console.log('A remembered custom background with its image missing, unreadable, or without IndexedDB falls back to Blur.');
   console.log('Camera backgrounds passed: real MediaPipe inference, presets, custom images, live switching, camera reuse, processed peer video, startup/runtime failures, cleanup, and remembered choices.');
 } finally { await browser.close(); }
+await import('./background-rungs-smoke.mjs');

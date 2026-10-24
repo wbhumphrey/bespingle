@@ -86,7 +86,10 @@ function VideoTile({ player, stream, local, media, screen = false, mirror = fals
   </div>;
 }
 
-function BackgroundChoices({ value, busy, onChange }: { value: CameraBackground; busy: boolean; onChange: (choice: CameraBackground, image?: File) => Promise<void> }) {
+// Shown beside a filter's control while device load holds it below the person's choice.
+const reducedNote = 'Reduced to keep the call smooth.';
+
+function BackgroundChoices({ value, busy, reduced, onChange }: { value: CameraBackground; busy: boolean; reduced: boolean; onChange: (choice: CameraBackground, image?: File) => Promise<void> }) {
   const upload = useRef<HTMLInputElement>(null);
   return <fieldset className="background-settings" disabled={busy}><legend>Camera background</legend>
     <div className="background-choices">{([{ id: 'none', label: 'None' }, { id: 'blur', label: 'Blur' }, { id: 'sky', label: 'Sky' }, { id: 'forest', label: 'Forest' }] as const).map(({ id, label }) =>
@@ -94,10 +97,11 @@ function BackgroundChoices({ value, busy, onChange }: { value: CameraBackground;
     <input ref={upload} type="file" accept="image/jpeg,image/png,image/webp" hidden aria-label="Background image" onChange={(event) => { const file = event.target.files?.[0]; if (file) void onChange('custom', file); event.target.value = ''; }} />
     <button type="button" className="secondary-button background-upload" aria-pressed={value === 'custom'} onClick={() => upload.current?.click()}>Choose image…{value === 'custom' ? ' ✓' : ''}</button>
     {busy && <p role="status">Preparing camera…</p>}
+    <p className="media-note reduced-note" role="status">{reduced ? reducedNote : ''}</p>
   </fieldset>;
 }
 
-type NoiseMedia = { noiseLevel: NoiseLevel; standardSupported: boolean; strongSupported: boolean; noiseActive: boolean | undefined; filtering: boolean; levelBusy: boolean };
+type NoiseMedia = { noiseLevel: NoiseLevel; standardSupported: boolean; strongSupported: boolean; noiseActive: boolean | undefined; filtering: boolean; noiseReduced: boolean; levelBusy: boolean };
 
 function NoiseLevels({ media, disabled, onChange }: { media: NoiseMedia; disabled: boolean; onChange: (level: NoiseLevel) => void }) {
   const levels = [
@@ -111,6 +115,7 @@ function NoiseLevels({ media, disabled, onChange }: { media: NoiseMedia; disable
       return <label key={id} className="noise-level"><input type="radio" name="noise-level" value={id} checked={media.noiseLevel === id} disabled={!supported} aria-label={label} aria-describedby={`noise-${id}-note`} onChange={() => onChange(id)} />
         <span><strong>{label}</strong><small id={`noise-${id}-note`}>{supported ? detail : unavailable}</small></span></label>;
     })}
+    <p className="media-note reduced-note" role="status">{media.noiseReduced ? reducedNote : ''}</p>
   </fieldset>;
 }
 
@@ -119,7 +124,8 @@ function NoiseLevels({ media, disabled, onChange }: { media: NoiseMedia; disable
 function noiseNote(media: NoiseMedia, micOn: boolean) {
   if (!micOn) return 'Your microphone is off. This choice applies when you turn it on.';
   if (media.levelBusy) return 'Changing the noise level…';
-  const strong = media.filtering ? 'Strong noise filtering is active' : '';
+  // Held at Standard under load, the filter runs but passes the microphone through.
+  const strong = media.filtering && !media.noiseReduced ? 'Strong noise filtering is active' : '';
   if (!media.standardSupported) {
     if (strong) return `${strong}. This browser has no built-in suppression, so the filter works alone.`;
     return 'Noise suppression is off. This browser has no built-in suppression.';
@@ -332,14 +338,14 @@ export default function App() {
 
     {backgroundOpen && self && <Dialog title="Camera background" description="Keep your surroundings private with blur or a virtual background.">
       {media.cameraOn ? <div className="background-preview"><VideoTile player={{ ...self, camera: true }} stream={media.localStream} local mirror={mirrorSelfView} selected={false} onSelect={() => {}} /></div> : <p className="media-note">Choose a background before turning on your camera.</p>}
-      <BackgroundChoices value={media.background} busy={media.busy} onChange={media.chooseBackground} />
+      <BackgroundChoices value={media.background} busy={media.busy} reduced={media.backgroundReduced} onChange={media.chooseBackground} />
       {media.error && <p className="form-error" role="alert">{media.error}</p>}
       <p className="media-note">Your background is applied on your device and is visible to everyone in your conversation.</p>
       <div className="form-actions"><button className="primary-button" onClick={() => setEditingBackground(false)}>Done<Icon name="check" /></button></div>
     </Dialog>}
 
     {isMediaPrompt && <Dialog title={`You're in ${carpet?.name ?? 'a conversation'}.`} description="What would you like to enable? You can hear and see others with your own devices off." className="media-dialog">
-      <BackgroundChoices value={media.background} busy={media.busy} onChange={media.chooseBackground} />
+      <BackgroundChoices value={media.background} busy={media.busy} reduced={media.backgroundReduced} onChange={media.chooseBackground} />
       <div className="device-choices">
         <button disabled={media.busy} onClick={() => { void chooseDevices(true, true); }}><span className="choice-icons"><Icon name="mic" /><Icon name="camera" /></span><strong>Both</strong><span>Microphone & camera</span></button>
         <button disabled={media.busy} onClick={() => { void chooseDevices(true, false); }}><span className="choice-icons"><Icon name="mic" /></span><strong>Microphone only</strong><span>Join with your voice</span></button>

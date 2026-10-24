@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { get } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -34,7 +35,15 @@ function start(command, args, extraEnv = {}) {
   child.on('exit', (code, signal) => { if (!shuttingDown) stop(signal ? 1 : (code ?? 1)); });
 }
 
-start('go', ['run', './server'], { GOCACHE: join(cache, 'go-build'), GOMODCACHE: join(cache, 'go-mod') });
-start(process.execPath, ['node_modules/vite/bin/vite.js']);
 process.on('SIGINT', () => stop());
 process.on('SIGTERM', () => stop());
+start('go', ['run', './server'], { GOCACHE: join(cache, 'go-build'), GOMODCACHE: join(cache, 'go-mod') });
+// Vite proxies /ws to Go, and the first `go run` in a fresh checkout compiles for a while. Starting
+// Vite only once Go answers means its "ready" is the whole stack's, and no first page joins a dead socket.
+while (!shuttingDown) {
+  // Not fetch: 6666 is one of the ports fetch refuses outright.
+  const healthy = await new Promise((resolve) => get('http://127.0.0.1:6666/api/health', (response) => { response.resume(); resolve(response.statusCode === 200); }).on('error', () => resolve(false)));
+  if (healthy) break;
+  await new Promise((resolve) => setTimeout(resolve, 200));
+}
+if (!shuttingDown) start(process.execPath, ['node_modules/vite/bin/vite.js']);

@@ -6,6 +6,14 @@ import { fileURLToPath } from 'node:url';
 const output = fileURLToPath(new URL('../test-results/audio/', import.meta.url));
 await mkdir(output, { recursive: true });
 
+// Run straight after `npm run dev`, the stack may still be starting: wait until the app and its office answer.
+const app = process.env.BESPINGLE_URL || 'http://localhost:5555';
+for (const deadline = Date.now() + 120000; ;) {
+  try { if ((await fetch(new URL('/api/health', app))).ok) break; } catch { /* Not listening yet. */ }
+  assert(Date.now() < deadline, `${app} did not answer within two minutes: is \`npm run dev\` running?`);
+  await new Promise((resolve) => setTimeout(resolve, 250));
+}
+
 const browser = await chromium.launch({
   executablePath: process.env.CHROME_PATH || undefined,
   headless: true,
@@ -29,7 +37,7 @@ try {
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  await page.goto(process.env.BESPINGLE_URL || 'http://localhost:5555');
+  await page.goto(app);
   await page.getByLabel('Your display name').fill('Audio check');
   await page.getByRole('button', { name: 'Enter the office', exact: true }).click();
   await page.getByRole('button', { name: 'Edit profile', exact: true }).waitFor();
@@ -217,7 +225,7 @@ try {
     if (init) await current.addInitScript(init, arg);
     // Each stands in for another browser, so none inherits the last page's tile.
     await current.addInitScript(() => localStorage.removeItem('bespingle_session'));
-    await current.goto(process.env.BESPINGLE_URL || 'http://localhost:5555');
+    await current.goto(app);
     await current.getByLabel('Your display name').fill(name);
     await current.getByRole('button', { name: 'Enter the office', exact: true }).click();
     await current.getByRole('button', { name: 'Edit profile', exact: true }).waitFor();

@@ -201,6 +201,9 @@ kbd { font-family: inherit; display: inline-grid; place-items: center; width: 16
 .device-choices strong { font-size: 12px; font-weight: 600; letter-spacing: -.2px; }
 .device-choices button > span:last-child { font-size: 10px; color: #b2bfd2; margin-top: 6px; line-height: 1.5; }
 .media-note { font-size: 10px; color: #afbbcd; line-height: 1.6; text-align: center; margin-top: 20px; }
+/* Kept in the page while empty, so the reduced state is announced when it appears. */
+.reduced-note { margin-top: 12px; color: #e6c98f; }
+.reduced-note:empty { margin: 0; }
 .permission-hint { font-size: 11px; color: #b3e7d8; margin-top: 17px; text-align: center; }
 .profile-preview { text-align: center; margin: 18px 0; }
 .profile-preview canvas { border-radius: 16px; background: #2a3a50; }

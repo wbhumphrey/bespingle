@@ -2,7 +2,8 @@ import workletUrl from './noiseFilter.worklet.ts?worker&url';
 import plainBinary from '../node_modules/@shiguredo/rnnoise-wasm/dist/rnnoise.wasm?url';
 import simdBinary from '../node_modules/@shiguredo/rnnoise-wasm/dist/rnnoise_simd.wasm?url';
 
-export type NoiseFilter = { track: MediaStreamTrack; stop: () => void };
+// While bypassed the filter stops running RNNoise and its track carries the microphone as it is.
+export type NoiseFilter = { track: MediaStreamTrack; stop: () => void; setBypassed: (bypassed: boolean) => void };
 
 // The smallest module using a SIMD instruction, as wasm-feature-detect checks it.
 const simd = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11]);
@@ -14,7 +15,7 @@ export function noiseFilterSupported() {
 
 // Resolves once filtered audio is flowing. After that, failures are reported through
 // onFailure exactly once. The source track belongs to the caller and is never stopped.
-export async function createNoiseFilter(source: MediaStreamTrack, onFailure: (message: string) => void, signal?: AbortSignal): Promise<NoiseFilter> {
+export async function createNoiseFilter(source: MediaStreamTrack, onFailure: (message: string) => void, signal?: AbortSignal, { bypassed = false }: { bypassed?: boolean } = {}): Promise<NoiseFilter> {
   if (!noiseFilterSupported()) throw new Error('The noise filter is not supported in this browser.');
   let context: AudioContext | undefined;
   let node: AudioWorkletNode | undefined;
@@ -78,7 +79,7 @@ export async function createNoiseFilter(source: MediaStreamTrack, onFailure: (me
     node = new AudioWorkletNode(context, 'rnnoise', {
       numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
       channelCount: 1, channelCountMode: 'explicit', channelInterpretation: 'speakers',
-      processorOptions: { wasm },
+      processorOptions: { wasm, bypassed },
     });
     node.port.onmessage = ({ data }) => {
       if (data.type === 'flowing') resolveFlowing();
@@ -96,7 +97,11 @@ export async function createNoiseFilter(source: MediaStreamTrack, onFailure: (me
     clearTimeout(timeout);
     signal?.removeEventListener('abort', abort);
     started = true;
-    return { track: output.stream.getAudioTracks()[0], stop };
+    const setBypassed = (bypass: boolean) => {
+      if (stopped || bypass === bypassed) return;
+      bypassed = bypass; node!.port.postMessage({ type: 'bypass', bypassed });
+    };
+    return { track: output.stream.getAudioTracks()[0], stop, setBypassed };
   } catch (error) {
     const reason = failure ?? new Error(error instanceof Error ? error.message : 'Could not start the noise filter.');
     stop();
